@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { Plus, Edit, Warehouse as WarehouseIcon } from 'lucide-react';
 import WarehouseModal from '../components/WarehouseModal';
 
@@ -14,6 +14,7 @@ interface Warehouse {
 }
 
 export default function Warehouses() {
+  const { profile } = useAuth();
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -21,17 +22,23 @@ export default function Warehouses() {
 
   useEffect(() => {
     fetchWarehouses();
-  }, []);
+  }, [profile]);
 
   const fetchWarehouses = async () => {
     try {
-      const { data, error } = await supabase
-        .from('warehouses')
-        .select('*, user_profiles(full_name)')
-        .order('name');
-
-      if (error) throw error;
-      setWarehouses(data || []);
+      const resp = await fetch('/api/warehouses');
+      if (!resp.ok) throw new Error('Failed to load warehouses');
+      const data = await resp.json();
+      // Map _id to id for consistency
+      const mapped = (data || []).map((w: any) => ({
+        id: w._id || w.id,
+        name: w.name,
+        code: w.code,
+        location: w.location,
+        is_active: w.is_active,
+        manager_id: w.manager_id,
+      }));
+      setWarehouses(mapped);
     } catch (error) {
       console.error('Error fetching warehouses:', error);
     } finally {

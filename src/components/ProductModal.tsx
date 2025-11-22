@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+// ProductModal now uses local API endpoints instead of Supabase for product/category CRUD
+import { useAuth } from '../contexts/AuthContext';
 import { X } from 'lucide-react';
 
 interface Category {
@@ -24,7 +25,10 @@ interface ProductModalProps {
 }
 
 export default function ProductModal({ product, onClose }: ProductModalProps) {
+  const { user } = useAuth();
   const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     sku: '',
@@ -38,7 +42,12 @@ export default function ProductModal({ product, onClose }: ProductModalProps) {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    // Only try to load categories when an authenticated session exists.
+    // The `categories` table has RLS enabled so anonymous requests will be
+    // denied (404). If you want public categories, change your DB policy.
+    // Always try to fetch categories from the local API. If it fails, fall back to local list.
     fetchCategories();
+
     if (product) {
       setFormData({
         name: product.name,
@@ -50,11 +59,41 @@ export default function ProductModal({ product, onClose }: ProductModalProps) {
         is_active: product.is_active,
       });
     }
-  }, [product]);
+  }, [product, user]);
 
   const fetchCategories = async () => {
-    const { data } = await supabase.from('categories').select('*').order('name');
-    setCategories(data || []);
+    setCategoriesLoading(true);
+    setCategoriesError(null);
+    try {
+      const resp = await fetch('/api/categories');
+      if (!resp.ok) throw new Error(`Categories API error: ${resp.status}`);
+      const data = await resp.json();
+      // Map MongoDB _id to id for consistency
+      const mapped = (data || []).map((cat: any) => ({
+        id: cat._id || cat.id,
+        name: cat.name,
+      }));
+      setCategories(mapped);
+      return;
+    } catch (err) {
+      console.warn('Categories API failed, falling back to local list', err);
+
+      const hint = `Could not load categories from API. Using a local fallback list so you can continue.\n`;
+      setCategoriesError(hint + 'Run the server and seed the database to persist categories.');
+
+      const fallback = [
+        { id: 'local:electronics', name: 'Electronics' },
+        { id: 'local:office-supplies', name: 'Office Supplies' },
+        { id: 'local:food-beverage', name: 'Food & Beverage' },
+        { id: 'local:cleaning', name: 'Cleaning' },
+        { id: 'local:clothing', name: 'Clothing' },
+        { id: 'local:accessories', name: 'Accessories' },
+        { id: 'local:hardware', name: 'Hardware' },
+      ];
+      setCategories(fallback);
+    } finally {
+      setCategoriesLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,26 +102,66 @@ export default function ProductModal({ product, onClose }: ProductModalProps) {
     setLoading(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      // Use auth context `user` for created_by when available
+      const currentUser = user;
+
+      // If the user selected a local (fallback) category, we can't reference a DB FK.
+      // Instead, clear category_id and append a note to the description so the
+      // product record still saves without a broken foreign key.
+      const payload = { ...formData } as any;
+      if (payload.category_id && String(payload.category_id).startsWith('local:')) {
+        const localName = categories.find((c) => c.id === payload.category_id)?.name;
+        payload.category_id = null;
+        const note = localName ? `\nCategory (unsaved): ${localName}` : '\nCategory (unsaved)';
+        payload.description = (payload.description || '') + note;
+      }
 
       if (product) {
-        const { error: updateError } = await supabase
-          .from('products')
-          .update(formData)
-          .eq('id', product.id);
-
-        if (updateError) throw updateError;
+        const resp = await fetch(`/api/products/${product.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) throw new Error('Failed to update product');
       } else {
-        const { error: insertError } = await supabase
-          .from('products')
-          .insert([{ ...formData, created_by: user?.id }]);
-
-        if (insertError) throw insertError;
+        // send _localCategoryName to server when using local fallback so seed note can be appended
+        if (payload.category_id && String(payload.category_id).startsWith('local:')) {
+          payload._localCategoryName = categories.find((c) => c.id === payload.category_id)?.name;
+        }
+        payload.created_by = currentUser?.id ?? null;
+        const resp = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+          const errBody = await resp.json().catch(() => null);
+          throw new Error(errBody?.error || 'Failed to create product');
+        }
       }
 
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Product save error (catch):', err);
+      let msg = 'An error occurred while saving the product';
+      try {
+        if (!err) {
+          msg = 'Unknown error';
+        } else if (typeof err === 'string') {
+          msg = err;
+        } else if (err instanceof Error) {
+          msg = err.message;
+        } else if ((err as any).message) {
+          msg = (err as any).message as string;
+        } else if ((err as any).error) {
+          msg = JSON.stringify((err as any).error);
+        } else {
+          msg = JSON.stringify(err);
+        }
+      } catch (e) {
+        msg = 'An unexpected error occurred';
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -141,19 +220,48 @@ export default function ProductModal({ product, onClose }: ProductModalProps) {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Category *
               </label>
-              <select
-                value={formData.category_id}
-                onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                required
-              >
-                <option value="">Select Category</option>
-                {categories.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </option>
-                ))}
-              </select>
+              {categoriesLoading ? (
+                <div className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm text-gray-600">Loading categories...</div>
+              ) : categories.length > 0 ? (
+                <select
+                  value={formData.category_id}
+                  onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  required
+                >
+                  <option value="">Select Category</option>
+                  {categories.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="space-y-2">
+                  <div className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-sm text-gray-700">
+                    No categories available.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={fetchCategories}
+                      className="px-3 py-1 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+                    >
+                      Reload categories
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => alert('Create categories from the Categories page or in Supabase dashboard.')}
+                      className="px-3 py-1 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+                    >
+                      How to add
+                    </button>
+                  </div>
+                  {categoriesError && (
+                    <p className="text-xs text-red-600">{categoriesError}</p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>

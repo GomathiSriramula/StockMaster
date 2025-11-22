@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
-import { Plus, Search, Edit, Trash2, Package } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+// Using new local API instead of Supabase for products/categories
+import { Plus, Search, Edit, Trash2, Package, Upload, Download, FileText } from 'lucide-react';
 import ProductModal from '../components/ProductModal';
 
 interface Product {
@@ -22,6 +22,9 @@ export default function Products() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [uploadError, setUploadError] = useState<string>('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchProducts();
@@ -38,12 +41,9 @@ export default function Products() {
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*, categories(name)')
-        .order('name');
-
-      if (error) throw error;
+      const resp = await fetch('/api/products');
+      if (!resp.ok) throw new Error(`Products API error: ${resp.status} ${resp.statusText}`);
+      const data = await resp.json();
       setProducts(data || []);
       setFilteredProducts(data || []);
     } catch (error) {
@@ -57,9 +57,8 @@ export default function Products() {
     if (!confirm('Are you sure you want to delete this product?')) return;
 
     try {
-      const { error } = await supabase.from('products').delete().eq('id', id);
-
-      if (error) throw error;
+      const resp = await fetch(`/api/products/${id}`, { method: 'DELETE' });
+      if (!resp.ok) throw new Error('Failed to delete product');
       await fetchProducts();
     } catch (error) {
       console.error('Error deleting product:', error);
@@ -78,6 +77,94 @@ export default function Products() {
     fetchProducts();
   };
 
+  const handleCSVUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.csv')) {
+      setUploadError('Please upload a CSV file');
+      return;
+    }
+
+    setUploadStatus('Processing...');
+    setUploadError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const resp = await fetch('/api/products/upload-csv', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to upload CSV');
+      }
+
+      setUploadStatus(`Success! ${data.created || 0} products created, ${data.updated || 0} updated, ${data.errors || 0} errors`);
+      await fetchProducts();
+      
+      // Clear status after 5 seconds
+      setTimeout(() => setUploadStatus(''), 5000);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Failed to upload CSV');
+    } finally {
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const downloadCSVTemplate = () => {
+    const template = `name,sku,category_id,unit,reorder_level,description
+Sample Product,SKU001,category_mongodb_id_here,pcs,10,Sample product description
+Another Product,SKU002,category_mongodb_id_here,kg,5,Another description`;
+    
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'product_upload_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const exportProductsToCSV = () => {
+    if (products.length === 0) {
+      alert('No products to export');
+      return;
+    }
+
+    const headers = ['name', 'sku', 'category_id', 'unit', 'reorder_level', 'description'];
+    const csvContent = [
+      headers.join(','),
+      ...products.map(p => [
+        `"${p.name || ''}"`,
+        p.sku || '',
+        p.category_id || '',
+        p.unit || 'pcs',
+        p.reorder_level || 0,
+        `"${(p.description || '').replace(/"/g, '""')}"`,
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `products_export_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -93,14 +180,56 @@ export default function Products() {
           <h1 className="text-3xl font-bold text-gray-900">Products</h1>
           <p className="text-gray-600 mt-1">Manage your product catalog</p>
         </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
-        >
-          <Plus className="w-5 h-5" />
-          Add Product
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={downloadCSVTemplate}
+            className="flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition"
+            title="Download CSV Template"
+          >
+            <Download className="w-5 h-5" />
+            Template
+          </button>
+          <button
+            onClick={exportProductsToCSV}
+            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
+            title="Export Products to CSV"
+          >
+            <FileText className="w-5 h-5" />
+            Export
+          </button>
+          <label className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition cursor-pointer">
+            <Upload className="w-5 h-5" />
+            Upload CSV
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv"
+              onChange={handleCSVUpload}
+              className="hidden"
+            />
+          </label>
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+          >
+            <Plus className="w-5 h-5" />
+            Add Product
+          </button>
+        </div>
       </div>
+
+      {/* Upload Status Messages */}
+      {uploadStatus && (
+        <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
+          {uploadStatus}
+        </div>
+      )}
+      
+      {uploadError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+          {uploadError}
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
         <div className="relative">

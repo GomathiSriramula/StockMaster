@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { X } from 'lucide-react';
 
 interface Product {
@@ -36,18 +36,27 @@ export default function StockOperationModal({ type, onClose }: StockOperationMod
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const { user } = useAuth();
 
   useEffect(() => {
     fetchData();
   }, []);
 
   const fetchData = async () => {
-    const [productsRes, warehousesRes] = await Promise.all([
-      supabase.from('products').select('id, name, sku').eq('is_active', true).order('name'),
-      supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name'),
-    ]);
-    setProducts(productsRes.data || []);
-    setWarehouses(warehousesRes.data || []);
+    try {
+      const [prodResp, whResp] = await Promise.all([
+        fetch('/api/products'),
+        fetch('/api/warehouses'),
+      ]);
+      const prodData = prodResp.ok ? await prodResp.json() : [];
+      const whData = whResp.ok ? await whResp.json() : [];
+      setProducts(prodData || []);
+      setWarehouses(whData || []);
+    } catch (err) {
+      console.warn('Failed to load products or warehouses', err);
+      setProducts([]);
+      setWarehouses([]);
+    }
   };
 
   const generateNumber = () => {
@@ -62,90 +71,70 @@ export default function StockOperationModal({ type, onClose }: StockOperationMod
     setLoading(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       const operationNumber = generateNumber();
+      const created_by = user?.id ?? null;
 
       if (type === 'receipt') {
-        const { error: insertError } = await supabase.from('stock_receipts').insert([{
-          receipt_number: operationNumber,
-          product_id: formData.product_id,
-          warehouse_id: formData.warehouse_id,
-          quantity: formData.quantity,
-          unit_cost: formData.unit_cost,
-          supplier_name: formData.supplier_name,
-          notes: formData.notes,
-          created_by: user?.id,
-        }]);
-        if (insertError) throw insertError;
+        const resp = await fetch('/api/stock_receipts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receipt_number: operationNumber,
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            quantity: formData.quantity,
+            unit_cost: formData.unit_cost,
+            supplier_name: formData.supplier_name,
+            notes: formData.notes,
+            created_by,
+          }),
+        });
+        if (!resp.ok) throw new Error('Failed to create receipt');
       } else if (type === 'delivery') {
-        const { error: insertError } = await supabase.from('stock_deliveries').insert([{
-          delivery_number: operationNumber,
-          product_id: formData.product_id,
-          warehouse_id: formData.warehouse_id,
-          quantity: formData.quantity,
-          customer_name: formData.customer_name,
-          notes: formData.notes,
-          created_by: user?.id,
-        }]);
-        if (insertError) throw insertError;
+        const resp = await fetch('/api/stock_deliveries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            delivery_number: operationNumber,
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            quantity: formData.quantity,
+            customer_name: formData.customer_name,
+            notes: formData.notes,
+            created_by,
+          }),
+        });
+        if (!resp.ok) throw new Error('Failed to create delivery');
       } else if (type === 'transfer') {
-        const { error: insertError } = await supabase.from('stock_transfers').insert([{
-          transfer_number: operationNumber,
-          product_id: formData.product_id,
-          from_warehouse_id: formData.from_warehouse_id,
-          to_warehouse_id: formData.to_warehouse_id,
-          quantity: formData.quantity,
-          notes: formData.notes,
-          created_by: user?.id,
-        }]);
-        if (insertError) throw insertError;
+        const resp = await fetch('/api/stock_transfers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transfer_number: operationNumber,
+            product_id: formData.product_id,
+            from_warehouse_id: formData.from_warehouse_id,
+            to_warehouse_id: formData.to_warehouse_id,
+            quantity: formData.quantity,
+            notes: formData.notes,
+            created_by,
+          }),
+        });
+        if (!resp.ok) throw new Error('Failed to create transfer');
       } else if (type === 'adjustment') {
-        const { error: insertError } = await supabase.from('stock_adjustments').insert([{
-          adjustment_number: operationNumber,
-          product_id: formData.product_id,
-          warehouse_id: formData.warehouse_id,
-          quantity_change: formData.quantity,
-          reason: formData.reason,
-          notes: formData.notes,
-          created_by: user?.id,
-        }]);
-        if (insertError) throw insertError;
-
-        const { data: stockData } = await supabase
-          .from('stock')
-          .select('quantity')
-          .eq('product_id', formData.product_id)
-          .eq('warehouse_id', formData.warehouse_id)
-          .maybeSingle();
-
-        if (stockData) {
-          await supabase
-            .from('stock')
-            .update({ quantity: Number(stockData.quantity) + Number(formData.quantity) })
-            .eq('product_id', formData.product_id)
-            .eq('warehouse_id', formData.warehouse_id);
-        } else {
-          await supabase
-            .from('stock')
-            .insert([{ product_id: formData.product_id, warehouse_id: formData.warehouse_id, quantity: formData.quantity }]);
-        }
-
-        const { data: newStock } = await supabase
-          .from('stock')
-          .select('quantity')
-          .eq('product_id', formData.product_id)
-          .eq('warehouse_id', formData.warehouse_id)
-          .single();
-
-        await supabase.from('stock_ledger').insert([{
-          product_id: formData.product_id,
-          warehouse_id: formData.warehouse_id,
-          transaction_type: 'adjustment',
-          reference_number: operationNumber,
-          quantity_change: formData.quantity,
-          quantity_after: newStock?.quantity || formData.quantity,
-          created_by: user?.id,
-        }]);
+        const resp = await fetch('/api/stock_adjustments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adjustment_number: operationNumber,
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            quantity_change: formData.quantity,
+            reason: formData.reason,
+            notes: formData.notes,
+            created_by,
+          }),
+        });
+        if (!resp.ok) throw new Error('Failed to create adjustment');
       }
 
       onClose();

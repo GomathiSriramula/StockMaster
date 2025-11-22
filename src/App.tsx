@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Products from './pages/Products';
 import Warehouses from './pages/Warehouses';
 import StockReceipts from './pages/StockReceipts';
+import Deliveries from './pages/Deliveries';
 import StockLedger from './pages/StockLedger';
 import LowStockAlerts from './pages/LowStockAlerts';
 import Layout from './components/Layout';
@@ -35,6 +36,8 @@ function AppContent() {
         return <Warehouses />;
       case 'receipts':
         return <StockReceipts />;
+      case 'deliveries':
+        return <Deliveries />;
       case 'ledger':
         return <StockLedger />;
       case 'alerts':

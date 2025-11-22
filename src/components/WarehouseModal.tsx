@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
-import { X } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { X, MapPin } from 'lucide-react';
 
 interface User {
   id: string;
@@ -22,6 +22,7 @@ interface WarehouseModalProps {
 }
 
 export default function WarehouseModal({ warehouse, onClose }: WarehouseModalProps) {
+  const { profile } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [formData, setFormData] = useState({
     name: '',
@@ -30,11 +31,14 @@ export default function WarehouseModal({ warehouse, onClose }: WarehouseModalPro
     manager_id: '',
     is_active: true,
   });
+  const [locationAddress, setLocationAddress] = useState('');
+  const [latitude, setLatitude] = useState('');
+  const [longitude, setLongitude] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    fetchUsers();
+    // Skip fetching users for now - can be implemented later if needed
     if (warehouse) {
       setFormData({
         name: warehouse.name,
@@ -43,17 +47,27 @@ export default function WarehouseModal({ warehouse, onClose }: WarehouseModalPro
         manager_id: warehouse.manager_id || '',
         is_active: warehouse.is_active,
       });
+      
+      // Parse location - expect format "address|lat,lng"
+      if (warehouse.location) {
+        if (warehouse.location.includes('|')) {
+          const [address, coords] = warehouse.location.split('|');
+          setLocationAddress(address);
+          const [lat, lng] = coords.split(',').map(s => s.trim());
+          setLatitude(lat);
+          setLongitude(lng);
+        } else if (warehouse.location.includes(',')) {
+          // Legacy format: just coordinates
+          const [lat, lng] = warehouse.location.split(',').map(s => s.trim());
+          setLatitude(lat);
+          setLongitude(lng);
+        } else {
+          // Just an address
+          setLocationAddress(warehouse.location);
+        }
+      }
     }
-  }, [warehouse]);
-
-  const fetchUsers = async () => {
-    const { data } = await supabase
-      .from('user_profiles')
-      .select('id, full_name')
-      .in('role', ['admin', 'manager'])
-      .order('full_name');
-    setUsers(data || []);
-  };
+  }, [warehouse, profile]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,19 +75,41 @@ export default function WarehouseModal({ warehouse, onClose }: WarehouseModalPro
     setLoading(true);
 
     try {
+      // Format location as "address|lat,lng" if we have coordinates
+      let location = locationAddress;
+      if (latitude && longitude) {
+        location = locationAddress 
+          ? `${locationAddress}|${latitude},${longitude}`
+          : `${latitude},${longitude}`;
+      }
+      
+      const locationData = {
+        ...formData,
+        location
+      };
+
       if (warehouse) {
-        const { error: updateError } = await supabase
-          .from('warehouses')
-          .update(formData)
-          .eq('id', warehouse.id);
+        const resp = await fetch(`/api/warehouses/${warehouse.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(locationData),
+        });
 
-        if (updateError) throw updateError;
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to update warehouse');
+        }
       } else {
-        const { error: insertError } = await supabase
-          .from('warehouses')
-          .insert([formData]);
+        const resp = await fetch('/api/warehouses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(locationData),
+        });
 
-        if (insertError) throw insertError;
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to create warehouse');
+        }
       }
 
       onClose();
@@ -129,28 +165,63 @@ export default function WarehouseModal({ warehouse, onClose }: WarehouseModalPro
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
-            <input
-              type="text"
-              value={formData.location}
-              onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            />
+            <div className="space-y-3">
+              {/* Address/Description Field */}
+              <div>
+                <input
+                  type="text"
+                  value={locationAddress}
+                  onChange={(e) => setLocationAddress(e.target.value)}
+                  placeholder="Enter address or location description"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                />
+              </div>
+
+              {/* Coordinates Fields */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    <MapPin className="w-3 h-3 inline mr-1" />
+                    Latitude
+                  </label>
+                  <input
+                    type="text"
+                    value={latitude}
+                    onChange={(e) => setLatitude(e.target.value)}
+                    placeholder="e.g., 40.712800"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    <MapPin className="w-3 h-3 inline mr-1" />
+                    Longitude
+                  </label>
+                  <input
+                    type="text"
+                    value={longitude}
+                    onChange={(e) => setLongitude(e.target.value)}
+                    placeholder="e.g., -74.006000"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  />
+                </div>
+              </div>
+              
+              <div className="text-xs text-gray-500">
+                💡 You can get coordinates from Google Maps or any mapping service
+              </div>
+            </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Manager</label>
-            <select
+            <label className="block text-sm font-medium text-gray-700 mb-2">Manager Name</label>
+            <input
+              type="text"
               value={formData.manager_id}
               onChange={(e) => setFormData({ ...formData, manager_id: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            >
-              <option value="">Select Manager</option>
-              {users.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.full_name}
-                </option>
-              ))}
-            </select>
+              placeholder="Enter manager name"
+            />
           </div>
 
           <div>

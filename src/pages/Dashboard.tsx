@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
 import {
   Package,
   AlertTriangle,
@@ -45,58 +44,45 @@ export default function Dashboard() {
 
   const fetchDashboardData = async () => {
     try {
-      const [
-        productsResult,
-        stockResult,
-        alertsResult,
-        receiptsResult,
-        deliveriesResult,
-        transfersResult,
-        warehousesResult,
-        ledgerResult,
-      ] = await Promise.all([
-        supabase.from('products').select('id', { count: 'exact', head: true }),
-        supabase.from('stock').select('quantity'),
-        supabase
-          .from('low_stock_alerts')
-          .select('id', { count: 'exact', head: true })
-          .eq('is_acknowledged', false),
-        supabase
-          .from('stock_receipts')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'pending'),
-        supabase
-          .from('stock_deliveries')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'pending'),
-        supabase
-          .from('stock_transfers')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'pending'),
-        supabase.from('warehouses').select('id', { count: 'exact', head: true }),
-        supabase
-          .from('stock_ledger')
-          .select('*, products(name), warehouses(name)')
-          .order('created_at', { ascending: false })
-          .limit(10),
+      // Fetch products, stock, alerts, warehouses, ledger and deliveries from our local API
+      const [productsRes, stockRes, alertsRes, warehousesRes, ledgerRes, deliveriesRes] = await Promise.all([
+        fetch('/api/products'),
+        fetch('/api/stock'),
+        fetch('/api/low_stock_alerts'),
+        fetch('/api/warehouses'),
+        fetch('/api/stock_ledger'),
+        fetch('/api/deliveries'),
       ]);
 
-      const totalStock = stockResult.data?.reduce((acc, item) => acc + Number(item.quantity), 0) || 0;
+      const productsData = (await productsRes.json()) || [];
+      const stockData = (await stockRes.json()) || [];
+      const alertsData = (await alertsRes.json()) || [];
+      const warehousesData = (await warehousesRes.json()) || [];
+      const ledgerData = (await ledgerRes.json()) || [];
+      const deliveriesData = (await deliveriesRes.json()) || [];
+
+      const totalStock = stockData.reduce((acc: number, item: any) => acc + Number(item.quantity || 0), 0);
+      
+      // Count pending deliveries (Picked or Packed status)
+      const pendingDeliveries = (deliveriesData || []).filter(
+        (d: any) => d.status === 'Picked' || d.status === 'Packed'
+      ).length || 0;
 
       setStats({
-        totalProducts: productsResult.count || 0,
+        totalProducts: productsData.length || 0,
         totalStock,
-        lowStockItems: alertsResult.count || 0,
-        pendingReceipts: receiptsResult.count || 0,
-        pendingDeliveries: deliveriesResult.count || 0,
-        pendingTransfers: transfersResult.count || 0,
-        totalWarehouses: warehousesResult.count || 0,
+        lowStockItems: (alertsData || []).filter((a: any) => !a.is_acknowledged).length || 0,
+        // pending counts are not implemented on the local API yet
+        pendingReceipts: 0,
+        pendingDeliveries,
+        pendingTransfers: 0,
+        totalWarehouses: warehousesData.length || 0,
       });
 
-      const activities: RecentActivity[] = (ledgerResult.data || []).map((item) => ({
-        id: item.id,
-        type: item.transaction_type,
-        description: `${item.transaction_type.replace('_', ' ')} - ${item.products?.name} at ${item.warehouses?.name}`,
+      const activities: RecentActivity[] = (ledgerData || []).slice(0, 10).map((item: any) => ({
+        id: item._id || item.id,
+        type: item.type || item.transaction_type || 'activity',
+        description: `${(item.type || item.transaction_type || '').replace(/_/g, ' ')} - ${item.product_id?.name || item.products?.name || ''} at ${item.warehouse_id?.name || item.warehouses?.name || ''}`,
         timestamp: item.created_at,
       }));
 

@@ -24,7 +24,7 @@ interface LayoutProps {
 }
 
 export default function Layout({ children, currentPage, onNavigate }: LayoutProps) {
-  const { profile, signOut } = useAuth();
+  const { profile, user, signOut } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const navigation = [
@@ -120,10 +120,10 @@ export default function Layout({ children, currentPage, onNavigate }: LayoutProp
                   <User className="w-4 h-4 text-gray-600" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm text-gray-900 truncate">
-                    {profile?.full_name}
-                  </p>
-                  <p className="text-xs text-gray-500 capitalize">{profile?.role}</p>
+                    <p className="font-semibold text-sm text-gray-900">
+                      {profile?.full_name || (user?.user_metadata as any)?.full_name || user?.email || 'User'}
+                    </p>
+                    <p className="text-xs text-gray-500 capitalize">{profile?.role || 'staff'}</p>
                 </div>
               </div>
             </div>
