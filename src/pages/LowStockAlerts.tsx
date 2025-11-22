@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
 import { AlertTriangle, Check } from 'lucide-react';
 
 interface Alert {
@@ -23,18 +22,23 @@ export default function LowStockAlerts() {
 
   const fetchAlerts = async () => {
     try {
-      let query = supabase
-        .from('low_stock_alerts')
-        .select('*, products(name, sku, unit), warehouses(name)')
-        .order('created_at', { ascending: false });
-
+      const res = await fetch('/api/low_stock_alerts');
+      const data = await res.json();
+      let list = data || [];
       if (filter === 'active') {
-        query = query.eq('is_acknowledged', false);
+        list = list.filter((a: any) => !a.is_acknowledged);
       }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      setAlerts(data || []);
+      // normalize shape for the UI if necessary
+      const normalized = list.map((a: any) => ({
+        id: a._id || a.id,
+        current_quantity: a.current_quantity,
+        reorder_level: a.reorder_level,
+        is_acknowledged: !!a.is_acknowledged,
+        created_at: a.created_at,
+        products: a.product_id ? { name: a.product_id.name, sku: a.product_id.sku, unit: a.product_id.unit } : a.products,
+        warehouses: a.warehouse_id ? { name: a.warehouse_id.name } : a.warehouses,
+      }));
+      setAlerts(normalized);
     } catch (error) {
       console.error('Error fetching alerts:', error);
     } finally {
@@ -44,18 +48,24 @@ export default function LowStockAlerts() {
 
   const handleAcknowledge = async (id: string) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      // Optimistic UI update
+      setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, is_acknowledged: true } : a)));
 
-      const { error } = await supabase
-        .from('low_stock_alerts')
-        .update({
-          is_acknowledged: true,
-          acknowledged_by: user?.id,
-          acknowledged_at: new Date().toISOString(),
-        })
-        .eq('id', id);
+      // Attempt to notify server (endpoint may not exist yet). If it fails, revert.
+      const resp = await fetch(`/api/low_stock_alerts/${id}/acknowledge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
 
-      if (error) throw error;
+      if (!resp.ok) {
+        // revert optimistic update
+        setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, is_acknowledged: false } : a)));
+        const text = await resp.text();
+        console.error('Failed to acknowledge alert:', text);
+        alert('Failed to acknowledge alert (server returned error)');
+        return;
+      }
+      // refetch to get server-canonical state
       fetchAlerts();
     } catch (error) {
       console.error('Error acknowledging alert:', error);

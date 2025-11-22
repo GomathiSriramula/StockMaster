@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { Plus, Check } from 'lucide-react';
 import StockOperationModal from '../components/StockOperationModal';
 
@@ -19,22 +19,20 @@ interface StockReceipt {
 }
 
 export default function StockReceipts() {
+  const { profile } = useAuth();
   const [receipts, setReceipts] = useState<StockReceipt[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     fetchReceipts();
-  }, []);
+  }, [profile]);
 
   const fetchReceipts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stock_receipts')
-        .select('*, products(name, unit), warehouses(name), user_profiles(full_name)')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const resp = await fetch('/api/stock_receipts');
+      if (!resp.ok) throw new Error('Failed to load receipts');
+      const data = await resp.json();
       setReceipts(data || []);
     } catch (error) {
       console.error('Error fetching receipts:', error);
@@ -45,54 +43,9 @@ export default function StockReceipts() {
 
   const handleComplete = async (id: string, productId: string, warehouseId: string, quantity: number) => {
     try {
-      const { error: updateError } = await supabase
-        .from('stock_receipts')
-        .update({ status: 'completed', completed_at: new Date().toISOString() })
-        .eq('id', id);
-
-      if (updateError) throw updateError;
-
-      const { data: stockData } = await supabase
-        .from('stock')
-        .select('quantity')
-        .eq('product_id', productId)
-        .eq('warehouse_id', warehouseId)
-        .maybeSingle();
-
-      if (stockData) {
-        await supabase
-          .from('stock')
-          .update({ quantity: Number(stockData.quantity) + Number(quantity) })
-          .eq('product_id', productId)
-          .eq('warehouse_id', warehouseId);
-      } else {
-        await supabase
-          .from('stock')
-          .insert([{ product_id: productId, warehouse_id: warehouseId, quantity }]);
-      }
-
-      const { data: newStock } = await supabase
-        .from('stock')
-        .select('quantity')
-        .eq('product_id', productId)
-        .eq('warehouse_id', warehouseId)
-        .single();
-
-      const receipt = receipts.find((r) => r.id === id);
-      const { data: { user } } = await supabase.auth.getUser();
-
-      await supabase.from('stock_ledger').insert([{
-        product_id: productId,
-        warehouse_id: warehouseId,
-        transaction_type: 'receipt',
-        reference_id: id,
-        reference_number: receipt?.receipt_number,
-        quantity_change: quantity,
-        quantity_after: newStock?.quantity || quantity,
-        created_by: user?.id,
-      }]);
-
-      fetchReceipts();
+      const resp = await fetch(`/api/stock_receipts/${id}/complete`, { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed to complete receipt');
+      await fetchReceipts();
     } catch (error) {
       console.error('Error completing receipt:', error);
       alert('Failed to complete receipt');

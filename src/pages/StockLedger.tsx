@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { FileText } from 'lucide-react';
 
 interface LedgerEntry {
@@ -15,6 +15,7 @@ interface LedgerEntry {
 }
 
 export default function StockLedger() {
+  const { user } = useAuth();
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -24,14 +25,38 @@ export default function StockLedger() {
 
   const fetchLedger = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stock_ledger')
-        .select('*, products(name, unit), warehouses(name), user_profiles(full_name)')
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/stock_ledger', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
 
-      if (error) throw error;
-      setEntries(data || []);
+      if (!response.ok) throw new Error('Failed to fetch ledger');
+      
+      const data = await response.json();
+      
+      // Map MongoDB response to expected format
+      const mappedEntries = data.map((entry: any) => ({
+        id: entry._id,
+        transaction_type: entry.transaction_type,
+        reference_number: entry.reference_number || '',
+        quantity_change: entry.quantity_change,
+        quantity_after: entry.quantity_after,
+        created_at: entry.createdAt,
+        products: {
+          name: entry.product_id?.name || 'Unknown',
+          unit: entry.product_id?.unit || ''
+        },
+        warehouses: {
+          name: entry.warehouse_id?.name || 'Unknown'
+        },
+        user_profiles: {
+          full_name: 'System'
+        }
+      }));
+
+      setEntries(mappedEntries);
     } catch (error) {
       console.error('Error fetching ledger:', error);
     } finally {

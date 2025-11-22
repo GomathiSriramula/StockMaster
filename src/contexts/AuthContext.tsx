@@ -1,6 +1,19 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User } from '@supabase/supabase-js';
-import { supabase, UserProfile } from '../lib/supabase';
+
+interface User {
+  id: string;
+  email: string;
+  full_name: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+interface UserProfile {
+  id: string;
+  email: string;
+  full_name: string;
+  is_active: boolean;
+}
 
 interface AuthContextType {
   user: User | null;
@@ -21,108 +34,110 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          await fetchProfile(session.user.id);
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
-      })();
-    });
-
-    return () => subscription.unsubscribe();
+    // Check for existing token on mount
+    const token = localStorage.getItem('token');
+    if (token) {
+      fetchCurrentUser(token);
+    } else {
+      setLoading(false);
+    }
   }, []);
 
-  const fetchProfile = async (userId: string) => {
+  const fetchCurrentUser = async (token: string) => {
     try {
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
+      const response = await fetch('/api/auth/me', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
 
-      if (error) throw error;
-      setProfile(data);
+      if (!response.ok) {
+        // Token invalid or expired
+        localStorage.removeItem('auth_token');
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      const data = await response.json();
+      setUser(data.user);
+      setProfile(data.user);
     } catch (error) {
-      console.error('Error fetching profile:', error);
+      console.error('Error fetching current user:', error);
+      localStorage.removeItem('auth_token');
+      setUser(null);
+      setProfile(null);
     } finally {
       setLoading(false);
     }
   };
 
   const signUp = async (email: string, password: string, fullName: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
-        },
+    const response = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        email,
+        password,
+        full_name: fullName,
+      }),
     });
 
-    if (error) throw error;
+    const data = await response.json();
 
-    if (data.user) {
-      const { error: profileError } = await supabase
-        .from('user_profiles')
-        .insert([
-          {
-            id: data.user.id,
-            full_name: fullName,
-            role: 'staff',
-            is_active: true,
-          },
-        ]);
-
-      if (profileError) throw profileError;
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to sign up');
     }
+
+    // Store token and set user
+    localStorage.setItem('token', data.token);
+    setUser(data.user);
+    setProfile(data.user);
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+    const response = await fetch('/api/auth/signin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        password,
+      }),
     });
 
-    if (error) throw error;
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to sign in');
+    }
+
+    // Store token and set user
+    localStorage.setItem('token', data.token);
+    setUser(data.user);
+    setProfile(data.user);
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    localStorage.removeItem('token');
+    setUser(null);
     setProfile(null);
   };
 
   const verifyOTP = async (email: string, token: string) => {
-    const { error } = await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: 'email',
-    });
-
-    if (error) throw error;
+    // OTP verification not implemented for MongoDB auth
+    // Can be added later if needed
+    console.warn('OTP verification not implemented for MongoDB auth');
   };
 
   const resendOTP = async (email: string) => {
-    const { error } = await supabase.auth.resend({
-      type: 'signup',
-      email,
-    });
-
-    if (error) throw error;
+    // OTP resend not implemented for MongoDB auth
+    // Can be added later if needed
+    console.warn('OTP resend not implemented for MongoDB auth');
   };
 
   const value = {
